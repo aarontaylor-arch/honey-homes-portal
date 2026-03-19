@@ -1,5 +1,5 @@
 """
-Honey Homes Appraisal Agent
+Appraisal Tool
 A Streamlit app for generating STR property appraisals using portfolio comps.
 """
 
@@ -29,8 +29,8 @@ REGIONS = ["Wagga Wagga", "Orange", "Bathurst", "Dubbo"]
 # =============================================================================
 
 st.set_page_config(
-    page_title="Honey Homes Appraisal Agent",
-    page_icon="🍯",
+    page_title="Appraisal Tool",
+    page_icon="🏠",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
@@ -40,12 +40,12 @@ st.markdown("""
     @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&display=swap');
     
     * { font-family: 'DM Sans', sans-serif; }
-    .stApp { background: linear-gradient(180deg, #FFFBEB 0%, #FFFFFF 100%); }
-    h1 { color: #D97706 !important; font-weight: 700 !important; }
-    h2, h3 { color: #92400E !important; font-weight: 600 !important; }
+    .stApp { background: linear-gradient(180deg, #F0F4F8 0%, #FFFFFF 100%); }
+    h1 { color: #1E3A5F !important; font-weight: 700 !important; }
+    h2, h3 { color: #2D5A87 !important; font-weight: 600 !important; }
     
     .stButton > button {
-        background: linear-gradient(135deg, #F59E0B 0%, #D97706 100%);
+        background: linear-gradient(135deg, #3B82F6 0%, #1E40AF 100%);
         color: white;
         border: none;
         padding: 0.75rem 2rem;
@@ -55,7 +55,7 @@ st.markdown("""
     
     .stButton > button:hover {
         transform: translateY(-2px);
-        box-shadow: 0 4px 12px rgba(217, 119, 6, 0.4);
+        box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4);
     }
     
     .metric-card {
@@ -63,12 +63,12 @@ st.markdown("""
         border-radius: 12px;
         padding: 1.5rem;
         box-shadow: 0 2px 8px rgba(0,0,0,0.08);
-        border-left: 4px solid #F59E0B;
+        border-left: 4px solid #3B82F6;
         margin: 0.5rem 0;
     }
     
     .appraisal-box {
-        background: linear-gradient(135deg, #FEF3C7 0%, #FDE68A 100%);
+        background: linear-gradient(135deg, #DBEAFE 0%, #BFDBFE 100%);
         border-radius: 12px;
         padding: 2rem;
         text-align: center;
@@ -127,10 +127,9 @@ def get_regional_comps(region: str, bedrooms: int) -> list:
         AVG(bp.total) as avg_monthly_payout,
         AVG(bp.gross) as avg_monthly_gross
     FROM Listings l
-    LEFT JOIN BtListingPerformance bp ON l.Nickname = bp.listingName
+    INNER JOIN BtListingPerformance bp ON l.Nickname = bp.listingName
     WHERE l.Town = %s
     AND l.Bedrooms BETWEEN %s AND %s
-    AND l.Active = 1
     AND bp.month >= DATEADD(month, -14, GETDATE())
     GROUP BY 
         l.Nickname, l.Bedrooms, l.Bathrooms, l.Amenities, 
@@ -169,9 +168,8 @@ def get_region_averages(region: str) -> dict:
         AVG(bp.gross) as avg_monthly_gross,
         AVG(bp.occupancy) as avg_occupancy
     FROM Listings l
-    LEFT JOIN BtListingPerformance bp ON l.Nickname = bp.listingName
+    INNER JOIN BtListingPerformance bp ON l.Nickname = bp.listingName
     WHERE l.Town = %s
-    AND l.Active = 1
     AND bp.month >= DATEADD(month, -12, GETDATE())
     GROUP BY l.Bedrooms
     ORDER BY l.Bedrooms
@@ -214,7 +212,7 @@ Comp {i}: {comp['Nickname']}
 - Amenities: {comp['Amenities'][:200] if comp['Amenities'] else 'Not listed'}...
 """
     
-    prompt = f"""You are the Honey Homes Appraisal Agent. Generate a professional STR appraisal for a prospect property.
+    prompt = f"""You are an STR Appraisal Agent. Generate a professional STR appraisal for a prospect property.
 
 PROSPECT PROPERTY:
 - Address: {property_details['address']}
@@ -266,7 +264,7 @@ Keep it concise and actionable. Use specific numbers from the comps.
 # =============================================================================
 
 def main():
-    st.markdown("# 🍯 Honey Homes Appraisal Agent")
+    st.markdown("# 🏠 Appraisal Tool")
     st.markdown("*Generate STR appraisals using real portfolio performance data*")
     st.markdown("---")
     
@@ -306,12 +304,14 @@ def main():
         averages = get_region_averages(region)
         if bedrooms in averages:
             avg = averages[bedrooms]
+            annual_payout = (avg['avg_monthly_payout'] or 0) * 12
+            occupancy = avg['avg_occupancy'] or 0
             st.markdown(f"""
             <div class="metric-card">
                 <strong>{bedrooms}-bed average in {region}</strong><br>
                 📊 {avg['property_count']} properties<br>
-                💰 ${(avg['avg_monthly_payout'] or 0) * 12:,.0f}/year owner payout<br>
-                📈 {(avg['avg_occupancy'] or 0):.0%} occupancy
+                💰 ${annual_payout:,.0f}/year owner payout<br>
+                📈 {occupancy:.0%} occupancy
             </div>
             """, unsafe_allow_html=True)
         else:
