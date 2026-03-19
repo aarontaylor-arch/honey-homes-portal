@@ -243,7 +243,7 @@ Keep it concise and actionable. Use specific numbers from the comps.
                 "content-type": "application/json"
             },
             json={
-                "model": "claude-3-5-sonnet-20241022",
+                "model": "claude-3-5-sonnet-20240229",
                 "max_tokens": 2000,
                 "messages": [{"role": "user", "content": prompt}]
             }
