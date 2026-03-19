@@ -5,7 +5,7 @@ A Streamlit app for generating STR property appraisals using portfolio comps.
 
 import streamlit as st
 import pymssql
-import anthropic
+import requests
 import os
 from datetime import datetime
 
@@ -181,8 +181,6 @@ def generate_appraisal(property_details: dict, comps: list, region_averages: dic
     if not ANTHROPIC_API_KEY:
         return "⚠️ Anthropic API key not configured. Set ANTHROPIC_API_KEY in environment variables."
     
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-    
     comps_text = ""
     for i, comp in enumerate(comps[:5], 1):
         annual_payout = (comp['avg_monthly_payout'] or 0) * 12
@@ -237,12 +235,24 @@ Keep it concise and actionable. Use specific numbers from the comps.
 """
     
     try:
-        message = client.messages.create(
-            model="claude-3-5-sonnet-20241022",
-            max_tokens=2000,
-            messages=[{"role": "user", "content": prompt}]
+        response = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json"
+            },
+            json={
+                "model": "claude-3-5-sonnet-20241022",
+                "max_tokens": 2000,
+                "messages": [{"role": "user", "content": prompt}]
+            }
         )
-        return message.content[0].text
+        
+        if response.status_code == 200:
+            return response.json()["content"][0]["text"]
+        else:
+            return f"⚠️ API Error: {response.status_code} - {response.text}"
     except Exception as e:
         return f"⚠️ Error generating appraisal: {e}"
 
