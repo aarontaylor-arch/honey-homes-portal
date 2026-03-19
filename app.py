@@ -66,21 +66,6 @@ st.markdown("""
         border-left: 4px solid #3B82F6;
         margin: 0.5rem 0;
     }
-    
-    .appraisal-box {
-        background: linear-gradient(135deg, #DBEAFE 0%, #BFDBFE 100%);
-        border-radius: 12px;
-        padding: 2rem;
-        text-align: center;
-        margin: 1rem 0;
-    }
-    
-    .comp-table {
-        background: white;
-        border-radius: 12px;
-        padding: 1rem;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.06);
-    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -118,23 +103,24 @@ def get_regional_comps(region: str, bedrooms: int) -> list:
         l.Bedrooms,
         l.Bathrooms,
         l.Amenities,
-        l.Address,
+        l.StreetAddress,
         l.AirbnbId,
-        bp.ownerName,
-        COUNT(DISTINCT bp.month) as months_of_data,
+        CONCAT(g.FirstName, ' ', g.LastName) as OwnerName,
+        COUNT(DISTINCT CONCAT(bp.year, '-', bp.month)) as months_of_data,
         SUM(bp.total) as total_owner_payout,
-        SUM(bp.gross) as total_gross_revenue,
+        SUM(bp.accom) as total_gross_revenue,
         AVG(bp.total) as avg_monthly_payout,
-        AVG(bp.gross) as avg_monthly_gross
+        AVG(bp.accom) as avg_monthly_gross,
+        AVG(bp.nights) as avg_nights
     FROM Listings l
     INNER JOIN BtListingPerformance bp ON l.Nickname = bp.listingName
+    LEFT JOIN GuestyOwners g ON l.Owners = g.GuestyId
     WHERE l.Town = %s
     AND l.Bedrooms BETWEEN %s AND %s
-    AND bp.month >= DATEADD(month, -14, GETDATE())
     GROUP BY 
         l.Nickname, l.Bedrooms, l.Bathrooms, l.Amenities, 
-        l.Address, l.AirbnbId, bp.ownerName
-    HAVING COUNT(DISTINCT bp.month) >= 3
+        l.StreetAddress, l.AirbnbId, g.FirstName, g.LastName
+    HAVING COUNT(DISTINCT CONCAT(bp.year, '-', bp.month)) >= 3
     ORDER BY SUM(bp.total) DESC
     """
     
@@ -165,12 +151,11 @@ def get_region_averages(region: str) -> dict:
         l.Bedrooms,
         COUNT(DISTINCT l.Nickname) as property_count,
         AVG(bp.total) as avg_monthly_payout,
-        AVG(bp.gross) as avg_monthly_gross,
-        AVG(bp.occupancy) as avg_occupancy
+        AVG(bp.accom) as avg_monthly_gross,
+        AVG(bp.nights) as avg_nights
     FROM Listings l
     INNER JOIN BtListingPerformance bp ON l.Nickname = bp.listingName
     WHERE l.Town = %s
-    AND bp.month >= DATEADD(month, -12, GETDATE())
     GROUP BY l.Bedrooms
     ORDER BY l.Bedrooms
     """
@@ -202,14 +187,17 @@ def generate_appraisal(property_details: dict, comps: list, region_averages: dic
     for i, comp in enumerate(comps[:5], 1):
         annual_payout = (comp['avg_monthly_payout'] or 0) * 12
         annual_gross = (comp['avg_monthly_gross'] or 0) * 12
+        avg_nights = comp['avg_nights'] or 0
         comps_text += f"""
 Comp {i}: {comp['Nickname']}
 - Bedrooms/Bathrooms: {comp['Bedrooms']}/{comp['Bathrooms']}
-- Owner: {comp['ownerName']}
+- Owner: {comp['OwnerName'] or 'Unknown'}
+- Address: {comp['StreetAddress'] or 'Not listed'}
 - Months of data: {comp['months_of_data']}
 - Projected Annual Owner Payout: ${annual_payout:,.0f}
 - Projected Annual Gross Revenue: ${annual_gross:,.0f}
-- Amenities: {comp['Amenities'][:200] if comp['Amenities'] else 'Not listed'}...
+- Average nights booked per month: {avg_nights:.0f}
+- Amenities: {comp['Amenities'][:300] if comp['Amenities'] else 'Not listed'}...
 """
     
     prompt = f"""You are an STR Appraisal Agent. Generate a professional STR appraisal for a prospect property.
@@ -305,13 +293,13 @@ def main():
         if bedrooms in averages:
             avg = averages[bedrooms]
             annual_payout = (avg['avg_monthly_payout'] or 0) * 12
-            occupancy = avg['avg_occupancy'] or 0
+            avg_nights = avg['avg_nights'] or 0
             st.markdown(f"""
             <div class="metric-card">
                 <strong>{bedrooms}-bed average in {region}</strong><br>
                 📊 {avg['property_count']} properties<br>
                 💰 ${annual_payout:,.0f}/year owner payout<br>
-                📈 {occupancy:.0%} occupancy
+                🛏️ {avg_nights:.0f} nights/month
             </div>
             """, unsafe_allow_html=True)
         else:
@@ -339,9 +327,9 @@ def main():
             annual_gross = (comp['avg_monthly_gross'] or 0) * 12
             comp_data.append({
                 "Property": comp['Nickname'],
+                "Owner": comp['OwnerName'] or 'Unknown',
                 "Beds": comp['Bedrooms'],
                 "Baths": comp['Bathrooms'],
-                "Owner": comp['ownerName'],
                 "Months Data": comp['months_of_data'],
                 "Annual Payout": f"${annual_payout:,.0f}",
                 "Annual Gross": f"${annual_gross:,.0f}"
