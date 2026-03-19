@@ -1,4 +1,4 @@
 streamlit==1.31.0
 pymssql==2.2.11
-anthropic==0.18.1
+anthropic==0.39.0
 python-dotenv==1.0.0
