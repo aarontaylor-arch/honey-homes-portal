@@ -2,3 +2,4 @@ streamlit==1.31.0
 pymssql==2.2.11
 requests==2.31.0
 python-dotenv==1.0.0
+pandas==2.1.0
