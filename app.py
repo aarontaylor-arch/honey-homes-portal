@@ -1,8 +1,8 @@
 """
-Appraisal Tool v3.3
-- Labeled map markers using PyDeck
-- Real LTR search via web
-- Fixed formatting
+Appraisal Tool v3.4
+- Structured Streamlit components for summary
+- No reliance on Claude formatting
+- Clean, readable output
 """
 
 import streamlit as st
@@ -12,7 +12,6 @@ import os
 import math
 import pandas as pd
 import pydeck as pdk
-from datetime import datetime
 from decimal import Decimal
 
 # =============================================================================
@@ -35,6 +34,13 @@ REGION_COORDS = {
     "Orange": {"lat": -33.2836, "lon": 149.1013},
     "Bathurst": {"lat": -33.4196, "lon": 149.5777},
     "Dubbo": {"lat": -32.2569, "lon": 148.6011},
+}
+
+LTR_DEFAULTS = {
+    "Wagga Wagga": {2: 420, 3: 500, 4: 600, 5: 700},
+    "Orange": {2: 400, 3: 480, 4: 580, 5: 680},
+    "Bathurst": {2: 410, 3: 490, 4: 590, 5: 690},
+    "Dubbo": {2: 390, 3: 470, 4: 570, 5: 670},
 }
 
 # =============================================================================
@@ -66,14 +72,48 @@ st.markdown("""
     .stApp { background: linear-gradient(180deg, #F0F4F8 0%, #FFFFFF 100%); }
     h1 { color: #1E3A5F !important; font-weight: 700 !important; }
     h2, h3 { color: #2D5A87 !important; font-weight: 600 !important; }
+    
     .stButton > button {
         background: linear-gradient(135deg, #3B82F6 0%, #1E40AF 100%);
         color: white; border: none; padding: 0.75rem 2rem;
         font-weight: 600; border-radius: 8px;
     }
+    
     .metric-card {
         background: white; border-radius: 12px; padding: 1.5rem;
         box-shadow: 0 2px 8px rgba(0,0,0,0.08); border-left: 4px solid #3B82F6;
+    }
+    
+    .summary-box {
+        background: white;
+        border-radius: 12px;
+        padding: 1.5rem;
+        margin: 0.5rem 0;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+    }
+    
+    .advantage-item {
+        background: #F0FDF4;
+        border-left: 4px solid #10B981;
+        padding: 0.75rem 1rem;
+        margin: 0.5rem 0;
+        border-radius: 0 8px 8px 0;
+    }
+    
+    .disadvantage-item {
+        background: #FEF2F2;
+        border-left: 4px solid #EF4444;
+        padding: 0.75rem 1rem;
+        margin: 0.5rem 0;
+        border-radius: 0 8px 8px 0;
+    }
+    
+    .sales-point {
+        background: #EFF6FF;
+        border-left: 4px solid #3B82F6;
+        padding: 0.75rem 1rem;
+        margin: 0.5rem 0;
+        border-radius: 0 8px 8px 0;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -189,144 +229,119 @@ def get_region_averages(region: str) -> dict:
         conn.close()
 
 # =============================================================================
-# LTR SEARCH - Actually search the web
+# LTR ESTIMATE
 # =============================================================================
 
 def get_ltr_estimate(region: str, bedrooms: int) -> dict:
-    """Search for real rental listings to estimate LTR."""
+    weekly = LTR_DEFAULTS.get(region, {}).get(bedrooms, 550)
+    return {"weekly": weekly, "annual": weekly * 52}
+
+# =============================================================================
+# ANALYSIS FUNCTIONS
+# =============================================================================
+
+def analyze_property(property_details: dict, comps: list, ltr_estimate: dict) -> dict:
+    """Analyze property and generate structured insights."""
     
-    # Fallback defaults
-    defaults = {
-        "Wagga Wagga": {2: 420, 3: 500, 4: 600, 5: 700},
-        "Orange": {2: 400, 3: 480, 4: 580, 5: 680},
-        "Bathurst": {2: 410, 3: 490, 4: 590, 5: 690},
-        "Dubbo": {2: 390, 3: 470, 4: 570, 5: 670},
+    payout_values = [c['avg_monthly_payout'] * 12 for c in comps[:5]]
+    min_pay = min(payout_values) if payout_values else 0
+    max_pay = max(payout_values) if payout_values else 0
+    avg_pay = sum(payout_values) / len(payout_values) if payout_values else 0
+    
+    # Pool analysis
+    pool_comps = [c for c in comps[:5] if c.get('Amenities') and 'pool' in c['Amenities'].lower()]
+    pool_count = len(pool_comps)
+    prospect_has_pool = property_details.get('features') and 'pool' in property_details['features'].lower()
+    
+    # Adjustment factor
+    adjustment = 0.85 if (pool_count >= 2 and not prospect_has_pool) else 1.0
+    
+    # Calculate projections
+    conservative = min_pay * 0.9 * adjustment
+    midrange = avg_pay * adjustment
+    optimistic = max_pay * adjustment
+    
+    # STR premium
+    str_premium = midrange - ltr_estimate['annual']
+    str_premium_pct = (str_premium / ltr_estimate['annual'] * 100) if ltr_estimate['annual'] > 0 else 0
+    
+    # Find top performer
+    top_comp = max(comps[:5], key=lambda c: c['avg_monthly_payout']) if comps else None
+    top_comp_annual = top_comp['avg_monthly_payout'] * 12 if top_comp else 0
+    
+    # Build advantages
+    advantages = []
+    
+    bedrooms = property_details['bedrooms']
+    bathrooms = property_details['bathrooms']
+    
+    if bathrooms >= bedrooms:
+        advantages.append(f"{bathrooms} bathrooms with {bedrooms} bedrooms — premium 1:1 ratio appeals to families and groups")
+    elif bathrooms >= 2:
+        advantages.append(f"{bathrooms} bathrooms — good capacity for guest comfort")
+    
+    if bedrooms == 4:
+        advantages.append("4-bedroom sweet spot — large enough for groups, not oversized for couples")
+    elif bedrooms >= 5:
+        advantages.append(f"{bedrooms} bedrooms — appeals to large family gatherings and group bookings")
+    
+    avg_nights = sum(c['avg_nights'] for c in comps[:5]) / len(comps[:5]) if comps else 0
+    if avg_nights >= 20:
+        advantages.append(f"Strong local market — comps average {avg_nights:.0f} nights/month occupancy")
+    
+    if prospect_has_pool:
+        advantages.append("Pool — matches top performers and commands premium rates")
+    
+    # Build disadvantages
+    disadvantages = []
+    
+    if pool_count >= 2 and not prospect_has_pool:
+        pool_comp_names = [c['Nickname'] for c in pool_comps[:2]]
+        pool_comp_payouts = [f"${c['avg_monthly_payout']*12:,.0f}" for c in pool_comps[:2]]
+        disadvantages.append(f"No pool — top performers {pool_comp_names[0]} ({pool_comp_payouts[0]}) and {pool_comp_names[1] if len(pool_comp_names) > 1 else 'others'} have pools")
+    
+    if bathrooms > 2:
+        disadvantages.append(f"{bathrooms} bathrooms increases cleaning time and turnover costs")
+    
+    closest_comp = comps[0] if comps else None
+    if closest_comp and closest_comp.get('distance', 0) < 2:
+        disadvantages.append(f"Competitive area — {len([c for c in comps[:5] if c.get('distance', 0) < 2])} established STRs within 2km")
+    
+    if not disadvantages:
+        disadvantages.append("New listing will need time to build reviews and optimise pricing")
+    
+    # Build sales points
+    sales_points = []
+    
+    sales_points.append(f"STR delivers ${str_premium:,.0f} more per year than long-term rental — that's {str_premium_pct:.0f}% extra income")
+    
+    if bathrooms >= bedrooms:
+        sales_points.append(f"Your {bathrooms} bathrooms eliminate the #1 guest complaint — bathroom queues. This drives 5-star reviews.")
+    
+    sales_points.append(f"Our {region} properties average {avg_nights:.0f} nights booked per month with consistent demand year-round")
+    
+    if conservative > ltr_estimate['annual']:
+        sales_points.append(f"Even our conservative estimate of ${conservative:,.0f} beats traditional rental by ${conservative - ltr_estimate['annual']:,.0f}")
+    
+    return {
+        "conservative": conservative,
+        "midrange": midrange,
+        "optimistic": optimistic,
+        "str_premium": str_premium,
+        "str_premium_pct": str_premium_pct,
+        "adjustment": adjustment,
+        "pool_count": pool_count,
+        "prospect_has_pool": prospect_has_pool,
+        "advantages": advantages[:3],
+        "disadvantages": disadvantages[:3],
+        "sales_points": sales_points[:4],
+        "top_comp": top_comp,
+        "top_comp_annual": top_comp_annual,
+        "min_pay": min_pay,
+        "max_pay": max_pay,
+        "avg_pay": avg_pay,
+        "avg_nights": avg_nights
     }
-    weekly = defaults.get(region, {}).get(bedrooms, 550)
-    
-    if not ANTHROPIC_API_KEY:
-        return {"weekly": weekly, "annual": weekly * 52, "source": "estimate"}
-    
-    try:
-        # Ask Claude to search for rental listings
-        prompt = f"""Search for current rental listings for {bedrooms}-bedroom houses in {region}, NSW, Australia.
-
-Look at realestate.com.au or domain.com.au rental listings.
-
-What is the typical weekly rent for a {bedrooms}-bedroom house in {region} right now?
-
-Reply with ONLY a single number representing the weekly rent in dollars.
-For example: 580
-
-Do not include any other text, just the number."""
-
-        response = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": ANTHROPIC_API_KEY,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json"
-            },
-            json={
-                "model": "claude-sonnet-4-20250514",
-                "max_tokens": 50,
-                "messages": [{"role": "user", "content": prompt}]
-            },
-            timeout=15
-        )
-        
-        if response.status_code == 200:
-            text = response.json()["content"][0]["text"].strip()
-            import re
-            numbers = re.findall(r'\d+', text)
-            if numbers:
-                found_weekly = int(numbers[0])
-                # Sanity check - should be between 300 and 1500
-                if 300 <= found_weekly <= 1500:
-                    weekly = found_weekly
-                    return {"weekly": weekly, "annual": weekly * 52, "source": "search"}
-    except:
-        pass
-    
-    return {"weekly": weekly, "annual": weekly * 52, "source": "estimate"}
-
-# =============================================================================
-# APPRAISAL GENERATION
-# =============================================================================
-
-def generate_appraisal(property_details: dict, comps: list, ltr_estimate: dict) -> str:
-    if not ANTHROPIC_API_KEY:
-        return "⚠️ API key not configured."
-    
-    comps_text = ""
-    payout_values = []
-    
-    for i, comp in enumerate(comps[:5], 1):
-        annual = comp['avg_monthly_payout'] * 12
-        payout_values.append(annual)
-        has_pool = "Yes" if comp.get('Amenities') and 'pool' in comp['Amenities'].lower() else "No"
-        dist = comp.get('distance', 0)
-        comps_text += f"{i}. {comp['Nickname']}: {comp['Bedrooms']}bed/{comp['Bathrooms']}bath, Pool:{has_pool}, {dist:.1f}km, ${annual:,.0f}/year\n"
-    
-    min_pay, max_pay = min(payout_values), max(payout_values)
-    avg_pay = sum(payout_values) / len(payout_values)
-    pool_count = sum(1 for c in comps[:5] if c.get('Amenities') and 'pool' in c['Amenities'].lower())
-    
-    prompt = f"""Write a property appraisal. CRITICAL FORMATTING RULES:
-- PUT SPACES between numbers and words: "$38,000 annually" NOT "$38,000annually"
-- PUT SPACES around "to": "$31,000 to $54,000" NOT "$31,000to54,000"
-- WRITE FULL NUMBERS: "$54,236" NOT "$54k"
-- NEVER concatenate: "Regand Park ($54,236) and Macquarie" NOT "RegandPark$54,236andMacquarie"
-
-PROPERTY: {property_details['address']}, {property_details['bedrooms']}bed/{property_details['bathrooms']}bath, {property_details['region']}
-FEATURES: {property_details.get('features', 'Not specified')}
-
-COMPS (by distance):
-{comps_text}
-
-STATS: Range ${min_pay:,.0f} to ${max_pay:,.0f}, Average ${avg_pay:,.0f}, {pool_count}/5 have pools
-LTR: ${ltr_estimate['weekly']}/week (${ltr_estimate['annual']:,}/year)
-
-Write these sections:
-
-## Summary
-Two sentences about market position.
-
-## Projected Returns
-- **Conservative**: $XX,XXX annually - (reason)
-- **Mid-range**: $XX,XXX annually - (reason)
-- **Optimistic**: $XX,XXX annually - (reason)
-
-**STR Premium**: $XX,XXX above LTR of ${ltr_estimate['annual']:,} (XX% premium)
-
-## Key Factors
-**Advantages:** 2-3 bullet points
-**Disadvantages:** 2-3 bullet points
-
-## Sales Points
-3 bullet points for owner conversation.
-
-Keep under 300 words. REMEMBER: spaces between all numbers and words."""
-
-    try:
-        response = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": ANTHROPIC_API_KEY,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json"
-            },
-            json={
-                "model": "claude-sonnet-4-20250514",
-                "max_tokens": 1000,
-                "messages": [{"role": "user", "content": prompt}]
-            }
-        )
-        if response.status_code == 200:
-            return response.json()["content"][0]["text"]
-        return f"⚠️ API Error: {response.status_code}"
-    except Exception as e:
-        return f"⚠️ Error: {e}"
 
 # =============================================================================
 # MAIN
@@ -401,80 +416,59 @@ def main():
             
             comps.sort(key=lambda x: x.get('distance', 0) if x.get('distance', 0) > 0 else 999)
         
-        with st.spinner("Looking up rental rates..."):
-            ltr_estimate = get_ltr_estimate(region, bedrooms)
+        ltr_estimate = get_ltr_estimate(region, bedrooms)
+        
+        # Analyze
+        property_details = {
+            "address": address, "region": region, 
+            "bedrooms": bedrooms, "bathrooms": bathrooms,
+            "features": features, "value": value
+        }
+        analysis = analyze_property(property_details, comps, ltr_estimate)
         
         # ========== DISPLAY ==========
         
         st.markdown("### 📍 Prospect Property")
         st.info(f"**{address}** — {bedrooms} bed, {bathrooms} bath")
         
-        # MAP with labels
+        # MAP
         st.markdown("### 🗺️ Location Map")
         
         map_data = []
-        
-        # Prospect marker (blue)
         if prospect_coords:
             map_data.append({
-                'lat': prospect_coords['lat'],
-                'lon': prospect_coords['lon'],
-                'name': '📍 PROSPECT',
-                'color': [0, 100, 255, 200],
-                'size': 200
+                'lat': prospect_coords['lat'], 'lon': prospect_coords['lon'],
+                'name': '📍 PROSPECT', 'color': [0, 100, 255, 200], 'size': 200
             })
         
-        # Comp markers (red)
         for i, comp in enumerate(comps[:5], 1):
             if comp.get('Latitude') and comp.get('Longitude'):
                 annual = comp['avg_monthly_payout'] * 12
                 map_data.append({
-                    'lat': comp['Latitude'],
-                    'lon': comp['Longitude'],
+                    'lat': comp['Latitude'], 'lon': comp['Longitude'],
                     'name': f"{i}. {comp['Nickname']} (${annual:,.0f})",
-                    'color': [255, 100, 100, 200],
-                    'size': 150
+                    'color': [255, 100, 100, 200], 'size': 150
                 })
         
         if map_data:
             df = pd.DataFrame(map_data)
-            
-            # Calculate center
-            center_lat = df['lat'].mean()
-            center_lon = df['lon'].mean()
+            center_lat, center_lon = df['lat'].mean(), df['lon'].mean()
             
             layer = pdk.Layer(
-                'ScatterplotLayer',
-                data=df,
-                get_position=['lon', 'lat'],
-                get_color='color',
-                get_radius='size',
-                pickable=True
+                'ScatterplotLayer', data=df,
+                get_position=['lon', 'lat'], get_color='color', get_radius='size', pickable=True
             )
-            
             text_layer = pdk.Layer(
-                'TextLayer',
-                data=df,
-                get_position=['lon', 'lat'],
-                get_text='name',
-                get_size=14,
-                get_color=[0, 0, 0, 255],
-                get_angle=0,
-                get_text_anchor='"middle"',
-                get_alignment_baseline='"bottom"'
+                'TextLayer', data=df,
+                get_position=['lon', 'lat'], get_text='name', get_size=12,
+                get_color=[0, 0, 0, 255], get_text_anchor='"middle"', get_alignment_baseline='"bottom"'
             )
             
-            view = pdk.ViewState(latitude=center_lat, longitude=center_lon, zoom=12)
-            
-            deck = pdk.Deck(
+            st.pydeck_chart(pdk.Deck(
                 layers=[layer, text_layer],
-                initial_view_state=view,
+                initial_view_state=pdk.ViewState(latitude=center_lat, longitude=center_lon, zoom=12),
                 tooltip={"text": "{name}"}
-            )
-            
-            st.pydeck_chart(deck)
-        else:
-            st.warning("Could not generate map")
+            ))
         
         # COMPS
         st.markdown("### 📊 Comparable Properties")
@@ -488,7 +482,7 @@ def main():
             pool_text = "🏊 Pool" if has_pool else "❌ No pool"
             pool_color = "green" if has_pool else "red"
             
-            is_top = annual == max(c['avg_monthly_payout'] * 12 for c in comps[:5])
+            is_top = annual == analysis['top_comp_annual']
             badge = " ⭐" if is_top else ""
             
             airbnb_link = f"[Airbnb](https://www.airbnb.com.au/rooms/{comp['AirbnbId']})" if comp.get('AirbnbId') else ""
@@ -501,28 +495,21 @@ def main():
                 st.metric("Annual", f"${annual:,.0f}")
             st.divider()
         
-        # RETURNS
+        # PROJECTED RETURNS
         st.markdown("### 💰 Projected Returns")
-        
-        payout_values = [c['avg_monthly_payout'] * 12 for c in comps[:5]]
-        min_p, max_p, avg_p = min(payout_values), max(payout_values), sum(payout_values)/len(payout_values)
-        
-        prospect_has_pool = features and 'pool' in features.lower()
-        pool_count = sum(1 for c in comps[:5] if c.get('Amenities') and 'pool' in c['Amenities'].lower())
-        adj = 0.85 if (pool_count >= 2 and not prospect_has_pool) else 1.0
-        
-        conservative, midrange, optimistic = min_p * 0.9 * adj, avg_p * adj, max_p * adj
-        str_premium = midrange - ltr_estimate['annual']
-        str_pct = (str_premium / ltr_estimate['annual'] * 100) if ltr_estimate['annual'] > 0 else 0
         
         col1, col2, col3 = st.columns(3)
         with col1:
-            st.metric("Conservative", f"${conservative:,.0f}")
+            st.metric("Conservative", f"${analysis['conservative']:,.0f}", 
+                     help="Based on lowest performing comp minus 10%")
         with col2:
-            st.metric("Mid-range", f"${midrange:,.0f}")
+            st.metric("Mid-range", f"${analysis['midrange']:,.0f}", 
+                     help="Based on average of comparable properties")
         with col3:
-            st.metric("Optimistic", f"${optimistic:,.0f}")
+            st.metric("Optimistic", f"${analysis['optimistic']:,.0f}", 
+                     help="Achievable if matching top performer")
         
+        # LTR COMPARISON
         st.markdown("#### Long-Term Rental Comparison")
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -530,22 +517,39 @@ def main():
         with col2:
             st.metric("LTR Annual", f"${ltr_estimate['annual']:,}")
         with col3:
-            st.metric("STR Premium", f"+${str_premium:,.0f}", f"{str_pct:.0f}% above LTR")
+            st.metric("STR Premium", f"+${analysis['str_premium']:,.0f}", 
+                     f"{analysis['str_premium_pct']:.0f}% above LTR")
         
-        if adj < 1:
-            st.warning(f"⚠️ Estimates reduced 15% — {pool_count}/5 comps have pools, prospect does not")
+        if analysis['adjustment'] < 1:
+            st.warning(f"⚠️ Estimates reduced 15% — {analysis['pool_count']}/5 comps have pools, prospect does not")
         
-        # AI SUMMARY
-        st.markdown("### 📝 Appraisal Summary")
+        # ADVANTAGES
+        st.markdown("### ✅ Advantages")
+        for adv in analysis['advantages']:
+            st.markdown(f"""<div class="advantage-item">{adv}</div>""", unsafe_allow_html=True)
         
-        with st.spinner("Generating appraisal..."):
-            appraisal = generate_appraisal(
-                {"address": address, "region": region, "bedrooms": bedrooms, 
-                 "bathrooms": bathrooms, "features": features, "value": value},
-                comps, ltr_estimate
-            )
+        # DISADVANTAGES
+        st.markdown("### ⚠️ Considerations")
+        for dis in analysis['disadvantages']:
+            st.markdown(f"""<div class="disadvantage-item">{dis}</div>""", unsafe_allow_html=True)
         
-        st.markdown(appraisal)
+        # SALES POINTS
+        st.markdown("### 💬 Sales Talking Points")
+        for point in analysis['sales_points']:
+            st.markdown(f"""<div class="sales-point">"{point}"</div>""", unsafe_allow_html=True)
+        
+        # SUMMARY BOX
+        st.markdown("### 📋 Summary")
+        st.markdown(f"""
+        <div class="summary-box">
+            <strong>Property:</strong> {address}<br>
+            <strong>Configuration:</strong> {bedrooms} bed / {bathrooms} bath<br>
+            <strong>Comparable Range:</strong> ${analysis['min_pay']:,.0f} – ${analysis['max_pay']:,.0f} per year<br>
+            <strong>Recommended Quote:</strong> ${analysis['midrange']:,.0f} per year (mid-range)<br>
+            <strong>STR vs LTR:</strong> +${analysis['str_premium']:,.0f} ({analysis['str_premium_pct']:.0f}% premium over ${ltr_estimate['annual']:,} LTR)<br>
+            <strong>Market Occupancy:</strong> {analysis['avg_nights']:.0f} nights/month average
+        </div>
+        """, unsafe_allow_html=True)
 
 
 if __name__ == "__main__":
