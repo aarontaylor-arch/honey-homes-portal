@@ -1,8 +1,8 @@
 """
-Appraisal Tool v3.4
-- Structured Streamlit components for summary
-- No reliance on Claude formatting
-- Clean, readable output
+Appraisal Tool v3.5
+- Fixed region variable bug
+- Claude web search for real LTR data
+- Structured Streamlit components
 """
 
 import streamlit as st
@@ -12,6 +12,7 @@ import os
 import math
 import pandas as pd
 import pydeck as pdk
+import re
 from decimal import Decimal
 
 # =============================================================================
@@ -36,6 +37,7 @@ REGION_COORDS = {
     "Dubbo": {"lat": -32.2569, "lon": 148.6011},
 }
 
+# Fallback LTR estimates (used if web search fails)
 LTR_DEFAULTS = {
     "Wagga Wagga": {2: 420, 3: 500, 4: 600, 5: 700},
     "Orange": {2: 400, 3: 480, 4: 580, 5: 680},
@@ -229,12 +231,57 @@ def get_region_averages(region: str) -> dict:
         conn.close()
 
 # =============================================================================
-# LTR ESTIMATE
+# LTR ESTIMATE - Using Claude with Web Search
 # =============================================================================
 
 def get_ltr_estimate(region: str, bedrooms: int) -> dict:
-    weekly = LTR_DEFAULTS.get(region, {}).get(bedrooms, 550)
-    return {"weekly": weekly, "annual": weekly * 52}
+    """Get LTR estimate using Claude with web search."""
+    
+    # Fallback default
+    default_weekly = LTR_DEFAULTS.get(region, {}).get(bedrooms, 550)
+    
+    if not ANTHROPIC_API_KEY:
+        return {"weekly": default_weekly, "annual": default_weekly * 52, "source": "estimate"}
+    
+    try:
+        response = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json"
+            },
+            json={
+                "model": "claude-sonnet-4-20250514",
+                "max_tokens": 300,
+                "tools": [{"type": "web_search_20250305", "name": "web_search"}],
+                "messages": [{
+                    "role": "user", 
+                    "content": f"Search domain.com.au or realestate.com.au for {bedrooms} bedroom house rentals in {region} NSW Australia. What is the median or typical weekly rent? Reply with just the number (e.g. 580). If you find a range, give the midpoint."
+                }]
+            },
+            timeout=30
+        )
+        
+        if response.status_code == 200:
+            result = response.json()
+            # Extract text from response
+            text = ""
+            for block in result.get("content", []):
+                if block.get("type") == "text":
+                    text += block.get("text", "")
+            
+            # Find number in response
+            numbers = re.findall(r'\b(\d{3,4})\b', text)
+            if numbers:
+                weekly = int(numbers[0])
+                # Sanity check
+                if 250 <= weekly <= 1500:
+                    return {"weekly": weekly, "annual": weekly * 52, "source": "web search"}
+    except Exception as e:
+        pass
+    
+    return {"weekly": default_weekly, "annual": default_weekly * 52, "source": "estimate"}
 
 # =============================================================================
 # ANALYSIS FUNCTIONS
@@ -242,6 +289,10 @@ def get_ltr_estimate(region: str, bedrooms: int) -> dict:
 
 def analyze_property(property_details: dict, comps: list, ltr_estimate: dict) -> dict:
     """Analyze property and generate structured insights."""
+    
+    region = property_details['region']
+    bedrooms = property_details['bedrooms']
+    bathrooms = property_details['bathrooms']
     
     payout_values = [c['avg_monthly_payout'] * 12 for c in comps[:5]]
     min_pay = min(payout_values) if payout_values else 0
@@ -269,11 +320,11 @@ def analyze_property(property_details: dict, comps: list, ltr_estimate: dict) ->
     top_comp = max(comps[:5], key=lambda c: c['avg_monthly_payout']) if comps else None
     top_comp_annual = top_comp['avg_monthly_payout'] * 12 if top_comp else 0
     
+    # Average nights
+    avg_nights = sum(c['avg_nights'] for c in comps[:5]) / len(comps[:5]) if comps else 0
+    
     # Build advantages
     advantages = []
-    
-    bedrooms = property_details['bedrooms']
-    bathrooms = property_details['bathrooms']
     
     if bathrooms >= bedrooms:
         advantages.append(f"{bathrooms} bathrooms with {bedrooms} bedrooms — premium 1:1 ratio appeals to families and groups")
@@ -285,7 +336,6 @@ def analyze_property(property_details: dict, comps: list, ltr_estimate: dict) ->
     elif bedrooms >= 5:
         advantages.append(f"{bedrooms} bedrooms — appeals to large family gatherings and group bookings")
     
-    avg_nights = sum(c['avg_nights'] for c in comps[:5]) / len(comps[:5]) if comps else 0
     if avg_nights >= 20:
         advantages.append(f"Strong local market — comps average {avg_nights:.0f} nights/month occupancy")
     
@@ -298,14 +348,19 @@ def analyze_property(property_details: dict, comps: list, ltr_estimate: dict) ->
     if pool_count >= 2 and not prospect_has_pool:
         pool_comp_names = [c['Nickname'] for c in pool_comps[:2]]
         pool_comp_payouts = [f"${c['avg_monthly_payout']*12:,.0f}" for c in pool_comps[:2]]
-        disadvantages.append(f"No pool — top performers {pool_comp_names[0]} ({pool_comp_payouts[0]}) and {pool_comp_names[1] if len(pool_comp_names) > 1 else 'others'} have pools")
+        if len(pool_comp_names) >= 2:
+            disadvantages.append(f"No pool — top performers {pool_comp_names[0]} ({pool_comp_payouts[0]}) and {pool_comp_names[1]} ({pool_comp_payouts[1]}) have pools")
+        elif len(pool_comp_names) == 1:
+            disadvantages.append(f"No pool — top performer {pool_comp_names[0]} ({pool_comp_payouts[0]}) has a pool")
     
     if bathrooms > 2:
         disadvantages.append(f"{bathrooms} bathrooms increases cleaning time and turnover costs")
     
     closest_comp = comps[0] if comps else None
     if closest_comp and closest_comp.get('distance', 0) < 2:
-        disadvantages.append(f"Competitive area — {len([c for c in comps[:5] if c.get('distance', 0) < 2])} established STRs within 2km")
+        nearby_count = len([c for c in comps[:5] if c.get('distance', 0) < 2])
+        if nearby_count > 1:
+            disadvantages.append(f"Competitive area — {nearby_count} established STRs within 2km")
     
     if not disadvantages:
         disadvantages.append("New listing will need time to build reviews and optimise pricing")
@@ -416,7 +471,8 @@ def main():
             
             comps.sort(key=lambda x: x.get('distance', 0) if x.get('distance', 0) > 0 else 999)
         
-        ltr_estimate = get_ltr_estimate(region, bedrooms)
+        with st.spinner("Searching current rental rates..."):
+            ltr_estimate = get_ltr_estimate(region, bedrooms)
         
         # Analyze
         property_details = {
@@ -511,9 +567,12 @@ def main():
         
         # LTR COMPARISON
         st.markdown("#### Long-Term Rental Comparison")
+        
+        ltr_source = f" ({ltr_estimate.get('source', 'estimate')})" if ltr_estimate.get('source') else ""
+        
         col1, col2, col3 = st.columns(3)
         with col1:
-            st.metric("LTR Weekly", f"${ltr_estimate['weekly']}")
+            st.metric("LTR Weekly", f"${ltr_estimate['weekly']}", help=f"Source: {ltr_estimate.get('source', 'estimate')}")
         with col2:
             st.metric("LTR Annual", f"${ltr_estimate['annual']:,}")
         with col3:
