@@ -1,8 +1,8 @@
 """
-Appraisal Tool v3.5
-- Fixed region variable bug
-- Claude web search for real LTR data
-- Structured Streamlit components
+Appraisal Tool v3.6
+- Manual LTR input from user
+- No web search dependency
+- Clean structured output
 """
 
 import streamlit as st
@@ -12,7 +12,6 @@ import os
 import math
 import pandas as pd
 import pydeck as pdk
-import re
 from decimal import Decimal
 
 # =============================================================================
@@ -27,7 +26,6 @@ DB_CONFIG = {
     "port": 1433
 }
 
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 REGIONS = ["Wagga Wagga", "Orange", "Bathurst", "Dubbo"]
 
 REGION_COORDS = {
@@ -35,14 +33,6 @@ REGION_COORDS = {
     "Orange": {"lat": -33.2836, "lon": 149.1013},
     "Bathurst": {"lat": -33.4196, "lon": 149.5777},
     "Dubbo": {"lat": -32.2569, "lon": 148.6011},
-}
-
-# Fallback LTR estimates (used if web search fails)
-LTR_DEFAULTS = {
-    "Wagga Wagga": {2: 420, 3: 500, 4: 600, 5: 700},
-    "Orange": {2: 400, 3: 480, 4: 580, 5: 680},
-    "Bathurst": {2: 410, 3: 490, 4: 590, 5: 690},
-    "Dubbo": {2: 390, 3: 470, 4: 570, 5: 670},
 }
 
 # =============================================================================
@@ -231,68 +221,17 @@ def get_region_averages(region: str) -> dict:
         conn.close()
 
 # =============================================================================
-# LTR ESTIMATE - Using Claude with Web Search
-# =============================================================================
-
-def get_ltr_estimate(region: str, bedrooms: int) -> dict:
-    """Get LTR estimate using Claude with web search."""
-    
-    # Fallback default
-    default_weekly = LTR_DEFAULTS.get(region, {}).get(bedrooms, 550)
-    
-    if not ANTHROPIC_API_KEY:
-        return {"weekly": default_weekly, "annual": default_weekly * 52, "source": "estimate"}
-    
-    try:
-        response = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": ANTHROPIC_API_KEY,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json"
-            },
-            json={
-                "model": "claude-sonnet-4-20250514",
-                "max_tokens": 300,
-                "tools": [{"type": "web_search_20250305", "name": "web_search"}],
-                "messages": [{
-                    "role": "user", 
-                    "content": f"Search domain.com.au or realestate.com.au for {bedrooms} bedroom house rentals in {region} NSW Australia. What is the median or typical weekly rent? Reply with just the number (e.g. 580). If you find a range, give the midpoint."
-                }]
-            },
-            timeout=30
-        )
-        
-        if response.status_code == 200:
-            result = response.json()
-            # Extract text from response
-            text = ""
-            for block in result.get("content", []):
-                if block.get("type") == "text":
-                    text += block.get("text", "")
-            
-            # Find number in response
-            numbers = re.findall(r'\b(\d{3,4})\b', text)
-            if numbers:
-                weekly = int(numbers[0])
-                # Sanity check
-                if 250 <= weekly <= 1500:
-                    return {"weekly": weekly, "annual": weekly * 52, "source": "web search"}
-    except Exception as e:
-        pass
-    
-    return {"weekly": default_weekly, "annual": default_weekly * 52, "source": "estimate"}
-
-# =============================================================================
 # ANALYSIS FUNCTIONS
 # =============================================================================
 
-def analyze_property(property_details: dict, comps: list, ltr_estimate: dict) -> dict:
+def analyze_property(property_details: dict, comps: list, ltr_weekly: int) -> dict:
     """Analyze property and generate structured insights."""
     
     region = property_details['region']
     bedrooms = property_details['bedrooms']
     bathrooms = property_details['bathrooms']
+    
+    ltr_annual = ltr_weekly * 52
     
     payout_values = [c['avg_monthly_payout'] * 12 for c in comps[:5]]
     min_pay = min(payout_values) if payout_values else 0
@@ -313,8 +252,8 @@ def analyze_property(property_details: dict, comps: list, ltr_estimate: dict) ->
     optimistic = max_pay * adjustment
     
     # STR premium
-    str_premium = midrange - ltr_estimate['annual']
-    str_premium_pct = (str_premium / ltr_estimate['annual'] * 100) if ltr_estimate['annual'] > 0 else 0
+    str_premium = midrange - ltr_annual
+    str_premium_pct = (str_premium / ltr_annual * 100) if ltr_annual > 0 else 0
     
     # Find top performer
     top_comp = max(comps[:5], key=lambda c: c['avg_monthly_payout']) if comps else None
@@ -375,13 +314,15 @@ def analyze_property(property_details: dict, comps: list, ltr_estimate: dict) ->
     
     sales_points.append(f"Our {region} properties average {avg_nights:.0f} nights booked per month with consistent demand year-round")
     
-    if conservative > ltr_estimate['annual']:
-        sales_points.append(f"Even our conservative estimate of ${conservative:,.0f} beats traditional rental by ${conservative - ltr_estimate['annual']:,.0f}")
+    if conservative > ltr_annual:
+        sales_points.append(f"Even our conservative estimate of ${conservative:,.0f} beats traditional rental by ${conservative - ltr_annual:,.0f}")
     
     return {
         "conservative": conservative,
         "midrange": midrange,
         "optimistic": optimistic,
+        "ltr_weekly": ltr_weekly,
+        "ltr_annual": ltr_annual,
         "str_premium": str_premium,
         "str_premium_pct": str_premium_pct,
         "adjustment": adjustment,
@@ -422,7 +363,18 @@ def main():
             bathrooms = st.number_input("Bathrooms", min_value=1, max_value=10, value=2)
         
         features = st.text_area("Known Features (optional)", placeholder="Pool, renovation, etc.", height=80)
-        value = st.text_input("Property Value (optional)", placeholder="e.g., $750,000")
+        
+        col_d, col_e = st.columns(2)
+        with col_d:
+            value = st.text_input("Property Value (optional)", placeholder="e.g., $750,000")
+        with col_e:
+            ltr_weekly = st.number_input(
+                "LTR Weekly Rent ($)", 
+                min_value=200, 
+                max_value=2000, 
+                value=550,
+                help="Check domain.com.au for current rental rates"
+            )
     
     with col2:
         st.markdown("### Quick Stats")
@@ -430,18 +382,21 @@ def main():
         if bedrooms in averages:
             avg = averages[bedrooms]
             annual_payout = avg['avg_monthly_payout'] * 12
-            ltr = get_ltr_estimate(region, bedrooms)
-            str_premium = annual_payout - ltr['annual']
+            ltr_annual = ltr_weekly * 52
+            str_premium = annual_payout - ltr_annual
             
             st.markdown(f"""
             <div class="metric-card">
                 <strong>{bedrooms}-bed in {region}</strong><br><br>
                 📊 <strong>{avg['property_count']}</strong> properties<br>
                 💰 <strong>${annual_payout:,.0f}</strong>/year STR<br>
-                🏠 <strong>${ltr['weekly']}/week</strong> LTR (${ltr['annual']:,}/yr)<br>
+                🏠 <strong>${ltr_weekly}/week</strong> LTR (${ltr_annual:,}/yr)<br>
                 📈 <strong>+${str_premium:,.0f}</strong> STR premium
             </div>
             """, unsafe_allow_html=True)
+        
+        st.markdown("---")
+        st.caption("💡 Check [domain.com.au](https://www.domain.com.au/rent/) for current LTR rates")
     
     st.markdown("---")
     
@@ -471,16 +426,13 @@ def main():
             
             comps.sort(key=lambda x: x.get('distance', 0) if x.get('distance', 0) > 0 else 999)
         
-        with st.spinner("Searching current rental rates..."):
-            ltr_estimate = get_ltr_estimate(region, bedrooms)
-        
         # Analyze
         property_details = {
             "address": address, "region": region, 
             "bedrooms": bedrooms, "bathrooms": bathrooms,
             "features": features, "value": value
         }
-        analysis = analyze_property(property_details, comps, ltr_estimate)
+        analysis = analyze_property(property_details, comps, ltr_weekly)
         
         # ========== DISPLAY ==========
         
@@ -568,13 +520,11 @@ def main():
         # LTR COMPARISON
         st.markdown("#### Long-Term Rental Comparison")
         
-        ltr_source = f" ({ltr_estimate.get('source', 'estimate')})" if ltr_estimate.get('source') else ""
-        
         col1, col2, col3 = st.columns(3)
         with col1:
-            st.metric("LTR Weekly", f"${ltr_estimate['weekly']}", help=f"Source: {ltr_estimate.get('source', 'estimate')}")
+            st.metric("LTR Weekly", f"${analysis['ltr_weekly']}")
         with col2:
-            st.metric("LTR Annual", f"${ltr_estimate['annual']:,}")
+            st.metric("LTR Annual", f"${analysis['ltr_annual']:,}")
         with col3:
             st.metric("STR Premium", f"+${analysis['str_premium']:,.0f}", 
                      f"{analysis['str_premium_pct']:.0f}% above LTR")
@@ -605,7 +555,7 @@ def main():
             <strong>Configuration:</strong> {bedrooms} bed / {bathrooms} bath<br>
             <strong>Comparable Range:</strong> ${analysis['min_pay']:,.0f} – ${analysis['max_pay']:,.0f} per year<br>
             <strong>Recommended Quote:</strong> ${analysis['midrange']:,.0f} per year (mid-range)<br>
-            <strong>STR vs LTR:</strong> +${analysis['str_premium']:,.0f} ({analysis['str_premium_pct']:.0f}% premium over ${ltr_estimate['annual']:,} LTR)<br>
+            <strong>STR vs LTR:</strong> +${analysis['str_premium']:,.0f} ({analysis['str_premium_pct']:.0f}% premium over ${analysis['ltr_annual']:,} LTR)<br>
             <strong>Market Occupancy:</strong> {analysis['avg_nights']:.0f} nights/month average
         </div>
         """, unsafe_allow_html=True)
