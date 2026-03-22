@@ -485,7 +485,7 @@ def main():
             """, unsafe_allow_html=True)
         
         st.markdown("---")
-        st.caption("💡 [Check domain.com.au](https://www.domain.com.au/rent/) for LTR rates")
+        st.caption("💡 Check [domain.com.au](https://www.domain.com.au/rent/) or [realestate.com.au](https://www.realestate.com.au/rent/) for LTR rates")
     
     st.markdown("---")
     
@@ -592,20 +592,60 @@ def main():
                 st.metric("Annual", f"${annual:,.0f}")
             st.divider()
         
-        # SEASONALITY CHART
+        # SEASONALITY CHART with smooth curves
         st.markdown("### 📈 Monthly Revenue Projection")
         
-        chart_data = pd.DataFrame({
-            'Month': MONTHS,
-            'STR - High': analysis['monthly_high'],
-            'STR - Mid': analysis['monthly_mid'],
-            'Long-term Rental': [analysis['ltr_monthly']] * 12
-        })
+        import plotly.graph_objects as go
         
-        st.line_chart(
-            chart_data.set_index('Month'),
-            color=['#10B981', '#3B82F6', '#EF4444']
+        fig = go.Figure()
+        
+        # STR High (green)
+        fig.add_trace(go.Scatter(
+            x=MONTHS, y=analysis['monthly_high'],
+            mode='lines',
+            name='STR - High Returns',
+            line=dict(color='#10B981', width=3, shape='spline', smoothing=1.3),
+            fill=None
+        ))
+        
+        # STR Mid (blue)
+        fig.add_trace(go.Scatter(
+            x=MONTHS, y=analysis['monthly_mid'],
+            mode='lines',
+            name='STR - Mid Returns',
+            line=dict(color='#3B82F6', width=3, shape='spline', smoothing=1.3),
+            fill=None
+        ))
+        
+        # LTR (red dashed)
+        fig.add_trace(go.Scatter(
+            x=MONTHS, y=[analysis['ltr_monthly']] * 12,
+            mode='lines',
+            name='Long-term Rental',
+            line=dict(color='#EF4444', width=2, dash='dash')
+        ))
+        
+        fig.update_layout(
+            xaxis_title=None,
+            yaxis_title="Monthly Revenue ($)",
+            yaxis_tickformat="$,.0f",
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=-0.2,
+                xanchor="center",
+                x=0.5
+            ),
+            margin=dict(l=0, r=0, t=20, b=60),
+            height=400,
+            plot_bgcolor='rgba(0,0,0,0)',
+            paper_bgcolor='rgba(0,0,0,0)',
         )
+        
+        fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor='#E5E7EB')
+        fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='#E5E7EB')
+        
+        st.plotly_chart(fig, use_container_width=True)
         
         # Growth note
         if analysis['growth_rate'] != 0:
