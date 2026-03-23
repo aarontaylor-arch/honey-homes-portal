@@ -285,7 +285,7 @@ def analyze_property(property_details: dict, comps: list, ltr_weekly: int) -> di
     avg_pay = sum(payout_values) / len(payout_values) if payout_values else 0
     
     # Pool analysis
-    pool_comps = [c for c in comps[:5] if c.get('Amenities') and 'pool' in c['Amenities'].lower()]
+    pool_comps = [c for c in comps[:5] if c.get('Amenities') and 'pool' in c['Amenities'].lower() and 'pool table' not in c['Amenities'].lower()]
     pool_count = len(pool_comps)
     prospect_has_pool = property_details.get('features') and 'pool' in property_details['features'].lower()
     
@@ -572,7 +572,8 @@ def main():
         
         for i, comp in enumerate(comps[:5], 1):
             annual = comp['avg_monthly_payout'] * 12
-            has_pool = comp.get('Amenities') and 'pool' in comp['Amenities'].lower()
+            amenities_lower = (comp.get('Amenities') or '').lower()
+            has_pool = ('pool' in amenities_lower) and ('pool table' not in amenities_lower)
             dist = comp.get('distance', 0)
             
             dist_text = f"{dist:.1f}km" if dist > 0 else "Unknown"
