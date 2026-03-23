@@ -277,7 +277,9 @@ def analyze_property(property_details: dict, comps: list, ltr_weekly: int) -> di
     bathrooms = property_details['bathrooms']
     
     ltr_annual = ltr_weekly * 52
-    ltr_monthly = ltr_annual / 12
+    ltr_agent_fee = 0.06  # 6% agent fee
+    ltr_annual_net = ltr_annual * (1 - ltr_agent_fee)
+    ltr_monthly = ltr_annual_net / 12
     
     payout_values = [c['avg_monthly_payout'] * 12 for c in comps[:5]]
     min_pay = min(payout_values) if payout_values else 0
@@ -305,13 +307,16 @@ def analyze_property(property_details: dict, comps: list, ltr_weekly: int) -> di
     midrange = midrange_base * (1 + growth_rate)
     optimistic = optimistic_base * (1 + growth_rate)
     
-    # Monthly projections for chart
-    monthly_mid, _, _ = get_monthly_projections(midrange_base, region, apply_growth=True)
-    monthly_high, _, _ = get_monthly_projections(optimistic_base, region, apply_growth=True)
+    # Monthly projections for chart - apply growth on top of adjusted figures
+    seasonality = SEASONALITY.get(region, [1/12] * 12)
+    chart_annual_mid = midrange * (1 + growth_rate)
+    chart_annual_high = optimistic * (1 + growth_rate)
+    monthly_mid = [chart_annual_mid * s for s in seasonality]
+    monthly_high = [chart_annual_high * s for s in seasonality]
     
-    # STR premium
-    str_premium = midrange - ltr_annual
-    str_premium_pct = (str_premium / ltr_annual * 100) if ltr_annual > 0 else 0
+    # STR premium (compared to net LTR after agent fees)
+    str_premium = midrange - ltr_annual_net
+    str_premium_pct = (str_premium / ltr_annual_net * 100) if ltr_annual_net > 0 else 0
     
     # Find top performer
     top_comp = max(comps[:5], key=lambda c: c['avg_monthly_payout']) if comps else None
@@ -386,13 +391,40 @@ def analyze_property(property_details: dict, comps: list, ltr_weekly: int) -> di
         sales_points.append(f"{region} STR is booming — at current growth, you'd earn ${next_year:,.0f} by year two")
     
     # Conservative floor
-    if conservative > ltr_annual:
-        floor_premium = conservative - ltr_annual
+    if conservative > ltr_annual_net:
+        floor_premium = conservative - ltr_annual_net
         sales_points.append(f"Even our conservative estimate beats rent by ${floor_premium:,.0f} — there's no downside")
     
     # Bathroom advantage
     if bathrooms >= bedrooms:
         sales_points.append(f"Your {bathrooms} bathrooms are a competitive advantage — guests pay premium for no queues")
+    
+    # BUILD FIT ASSESSMENT
+    fit_warnings = []
+    fit_score = "good"  # good, marginal, poor
+    
+    # Check if conservative beats LTR
+    if conservative < ltr_annual_net:
+        fit_warnings.append(f"Conservative estimate (${conservative:,.0f}) is below LTR net (${ltr_annual_net:,.0f}) — risk of underperforming")
+        fit_score = "poor"
+    
+    # Check STR premium
+    if str_premium_pct < 15:
+        fit_warnings.append(f"STR premium only {str_premium_pct:.0f}% above LTR — may not justify extra management effort")
+        if fit_score != "poor":
+            fit_score = "marginal"
+    
+    # Check declining market
+    if growth_rate < -0.05:
+        fit_warnings.append(f"{region} market declining {abs(growth_rate)*100:.0f}% year-on-year — consider timing carefully")
+        if fit_score != "poor":
+            fit_score = "marginal"
+    
+    # Check low occupancy
+    if avg_nights < 15:
+        fit_warnings.append(f"Comparable properties averaging only {avg_nights:.0f} nights/month — weaker demand in this area")
+        if fit_score != "poor":
+            fit_score = "marginal"
     
     return {
         "conservative": conservative,
@@ -406,6 +438,7 @@ def analyze_property(property_details: dict, comps: list, ltr_weekly: int) -> di
         "monthly_high": monthly_high,
         "ltr_weekly": ltr_weekly,
         "ltr_annual": ltr_annual,
+        "ltr_annual_net": ltr_annual_net,
         "ltr_monthly": ltr_monthly,
         "str_premium": str_premium,
         "str_premium_pct": str_premium_pct,
@@ -420,7 +453,9 @@ def analyze_property(property_details: dict, comps: list, ltr_weekly: int) -> di
         "min_pay": min_pay,
         "max_pay": max_pay,
         "avg_pay": avg_pay,
-        "avg_nights": avg_nights
+        "avg_nights": avg_nights,
+        "fit_score": fit_score,
+        "fit_warnings": fit_warnings
     }
 
 # =============================================================================
@@ -528,6 +563,19 @@ def main():
         st.markdown("### 📍 Prospect Property")
         st.info(f"**{address}** — {bedrooms} bed, {bathrooms} bath")
         
+        # FIT ASSESSMENT
+        if analysis['fit_score'] == "good":
+            st.success("✅ **GOOD FIT** — This property shows strong STR potential")
+        elif analysis['fit_score'] == "marginal":
+            st.warning("⚠️ **MARGINAL FIT** — Review the considerations below before proceeding")
+            for warning in analysis['fit_warnings']:
+                st.caption(f"• {warning}")
+        else:  # poor
+            st.error("⛔ **PROCEED WITH CAUTION** — This property may not be a strong STR candidate")
+            for warning in analysis['fit_warnings']:
+                st.caption(f"• {warning}")
+            st.caption("*Recommendation: Unless property has unique features not captured here, LTR may be safer.*")
+        
         # MAP
         st.markdown("### 🗺️ Location Map")
         
@@ -600,20 +648,20 @@ def main():
         
         fig = go.Figure()
         
-        # STR High (green)
+        # STR Optimistic (green)
         fig.add_trace(go.Scatter(
             x=MONTHS, y=analysis['monthly_high'],
             mode='lines',
-            name='STR - High Returns',
+            name='STR - Optimistic',
             line=dict(color='#10B981', width=3, shape='spline', smoothing=1.3),
             fill=None
         ))
         
-        # STR Mid (blue)
+        # STR Mid-range (blue)
         fig.add_trace(go.Scatter(
             x=MONTHS, y=analysis['monthly_mid'],
             mode='lines',
-            name='STR - Mid Returns',
+            name='STR - Mid-range',
             line=dict(color='#3B82F6', width=3, shape='spline', smoothing=1.3),
             fill=None
         ))
@@ -679,7 +727,7 @@ def main():
         with col1:
             st.metric("LTR Weekly", f"${analysis['ltr_weekly']}")
         with col2:
-            st.metric("LTR Annual", f"${analysis['ltr_annual']:,}")
+            st.metric("LTR Annual (net of 6% fee)", f"${analysis['ltr_annual_net']:,.0f}")
         with col3:
             st.metric("STR Premium", f"+${analysis['str_premium']:,.0f}", 
                      f"{analysis['str_premium_pct']:.0f}% above LTR")
@@ -710,7 +758,7 @@ def main():
             <strong>Configuration:</strong> {bedrooms} bed / {bathrooms} bath<br>
             <strong>Comparable Range:</strong> ${analysis['min_pay']:,.0f} – ${analysis['max_pay']:,.0f} per year<br>
             <strong>Recommended Quote:</strong> ${analysis['midrange']:,.0f} per year (mid-range)<br>
-            <strong>STR vs LTR:</strong> +${analysis['str_premium']:,.0f} ({analysis['str_premium_pct']:.0f}% premium over ${analysis['ltr_annual']:,} LTR)<br>
+            <strong>STR vs LTR:</strong> +${analysis['str_premium']:,.0f} ({analysis['str_premium_pct']:.0f}% premium over ${analysis['ltr_annual_net']:,.0f} LTR net)<br>
             <strong>Market Occupancy:</strong> {analysis['avg_nights']:.0f} nights/month average<br>
             <strong>Market Trend:</strong> {analysis['growth_rate']*100:+.1f}% year-on-year
         </div>
