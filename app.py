@@ -568,7 +568,7 @@ def main():
             ))
         
         # COMPS
-        st.markdown("### 📊 Comparable Properties")
+        st.markdown("### 📊 Comparable Properties (Historical Performance)")
         
         for i, comp in enumerate(comps[:5], 1):
             annual = comp['avg_monthly_payout'] * 12
@@ -594,7 +594,7 @@ def main():
             st.divider()
         
         # SEASONALITY CHART with smooth curves
-        st.markdown("### 📈 Monthly Revenue Projection")
+        st.markdown("### 📈 Monthly Revenue Forecast (Year 1)")
         
         import plotly.graph_objects as go
         
@@ -657,7 +657,9 @@ def main():
                 st.warning(f"📉 Projections adjusted for {growth_pct:.1f}% year-on-year market change in {region}")
         
         # PROJECTED RETURNS
-        st.markdown("### 💰 Projected Returns")
+        growth_pct = analysis['growth_rate'] * 100
+        growth_label = f" (adjusted for {growth_pct:+.0f}% market trend)" if growth_pct != 0 else ""
+        st.markdown(f"### 💰 Projected Returns — Year 1 Forecast{growth_label}")
         
         col1, col2, col3 = st.columns(3)
         with col1:
