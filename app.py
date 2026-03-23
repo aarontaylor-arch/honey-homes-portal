@@ -313,16 +313,14 @@ def analyze_property(property_details: dict, comps: list, ltr_weekly: int) -> di
     midrange = midrange_base * (1 + growth_rate)
     optimistic = optimistic_base * (1 + growth_rate)
     
-    # Monthly projections for chart - apply growth on top of adjusted figures
+    # Monthly projections for chart - use the growth-adjusted figures (same as projected returns)
     seasonality = SEASONALITY.get(region, [1/12] * 12)
-    chart_annual_mid = midrange * (1 + growth_rate)
-    chart_annual_high = optimistic * (1 + growth_rate)
-    monthly_mid = [chart_annual_mid * s for s in seasonality]
-    monthly_high = [chart_annual_high * s for s in seasonality]
+    monthly_mid = [midrange * s for s in seasonality]
+    monthly_high = [optimistic * s for s in seasonality]
     
     # Average monthly (for comparison to existing owner payouts)
-    avg_monthly_mid = chart_annual_mid / 12
-    avg_monthly_high = chart_annual_high / 12
+    avg_monthly_mid = midrange / 12
+    avg_monthly_high = optimistic / 12
     
     # STR premium (compared to net LTR)
     str_premium = midrange - ltr_annual_net
@@ -445,8 +443,6 @@ def analyze_property(property_details: dict, comps: list, ltr_weekly: int) -> di
         "monthly_high": monthly_high,
         "avg_monthly_mid": avg_monthly_mid,
         "avg_monthly_high": avg_monthly_high,
-        "chart_annual_mid": chart_annual_mid,
-        "chart_annual_high": chart_annual_high,
         "ltr_weekly": ltr_weekly,
         "ltr_annual": ltr_annual,
         "ltr_annual_net": ltr_annual_net,
