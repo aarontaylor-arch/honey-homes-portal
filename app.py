@@ -286,18 +286,48 @@ def analyze_property(property_details: dict, comps: list, ltr_weekly: int) -> di
     max_pay = max(payout_values) if payout_values else 0
     avg_pay = sum(payout_values) / len(payout_values) if payout_values else 0
     
-    # Pool analysis
+    # Pool analysis (for comps)
     pool_comps = [c for c in comps[:5] if c.get('Amenities') and 'pool' in c['Amenities'].lower() and 'pool table' not in c['Amenities'].lower()]
     pool_count = len(pool_comps)
-    prospect_has_pool = property_details.get('features') and 'pool' in property_details['features'].lower()
     
-    # Adjustment factor for no pool
-    pool_adjustment = 0.85 if (pool_count >= 2 and not prospect_has_pool) else 1.0
+    # Quality adjustments from checkboxes
+    quality_adjustment = 1.0
+    quality_factors = []
+    
+    # Positive factors
+    if property_details.get('has_pool'):
+        quality_adjustment += 0.15
+        quality_factors.append(("Pool", "+15%"))
+    elif pool_count >= 2:
+        # No pool but comps have pools - penalty
+        quality_adjustment -= 0.15
+        quality_factors.append(("No pool (comps have pools)", "-15%"))
+    
+    if property_details.get('is_modern'):
+        # No adjustment - modern is expected baseline
+        pass
+    
+    if property_details.get('is_cbd'):
+        quality_adjustment += 0.02
+        quality_factors.append(("CBD location", "+2%"))
+    
+    if property_details.get('pets_allowed'):
+        quality_adjustment += 0.10
+        quality_factors.append(("Pets allowed", "+10%"))
+    
+    if property_details.get('has_outdoor'):
+        # No adjustment - outdoor is expected baseline
+        pass
+    
+    # Negative factors
+    if property_details.get('is_dated'):
+        quality_adjustment -= 0.10
+        quality_factors.append(("Dated / needs work", "-10%"))
     
     # Base projections (before growth)
-    conservative_base = min_pay * 0.9 * pool_adjustment
-    midrange_base = avg_pay * pool_adjustment
-    optimistic_base = max_pay * pool_adjustment
+    conservative_base = min_pay * 0.9 * quality_adjustment
+    midrange_base = avg_pay * quality_adjustment
+    optimistic_base = max_pay * quality_adjustment
     
     # Apply YoY growth
     growth_rate = YOY_GROWTH.get(region, 0)
@@ -313,6 +343,10 @@ def analyze_property(property_details: dict, comps: list, ltr_weekly: int) -> di
     chart_annual_high = optimistic * (1 + growth_rate)
     monthly_mid = [chart_annual_mid * s for s in seasonality]
     monthly_high = [chart_annual_high * s for s in seasonality]
+    
+    # Average monthly (for comparison to existing owner payouts)
+    avg_monthly_mid = chart_annual_mid / 12
+    avg_monthly_high = chart_annual_high / 12
     
     # STR premium (compared to net LTR after agent fees)
     str_premium = midrange - ltr_annual_net
@@ -344,18 +378,27 @@ def analyze_property(property_details: dict, comps: list, ltr_weekly: int) -> di
     if avg_nights >= 20:
         advantages.append(f"Proven demand — our {region} properties book {avg_nights:.0f} nights/month consistently")
     
-    if prospect_has_pool:
+    if property_details.get('has_pool'):
         advantages.append("Pool puts you in the top tier — our pool properties earn 15-20% more")
+    
+    if property_details.get('is_modern'):
+        advantages.append("Modern interior commands premium rates and better reviews")
+    
+    if property_details.get('pets_allowed'):
+        advantages.append("Pet-friendly opens up a underserved market segment")
     
     # Build disadvantages
     disadvantages = []
     
-    if pool_count >= 2 and not prospect_has_pool:
+    if pool_count >= 2 and not property_details.get('has_pool'):
         top_pool = pool_comps[0]
         disadvantages.append(f"No pool — {top_pool['Nickname']} with pool earns ${top_pool['avg_monthly_payout']*12:,.0f}/year")
     
     if growth_rate < -0.05:
         disadvantages.append(f"{region} market down {abs(growth_rate)*100:.0f}% year-on-year — factored into projections")
+    
+    if property_details.get('is_dated'):
+        disadvantages.append("Dated interior may limit nightly rates until refreshed")
     
     if bathrooms > 2:
         disadvantages.append(f"{bathrooms} bathrooms = longer turnovers (~$30-50 extra per clean)")
@@ -436,15 +479,19 @@ def analyze_property(property_details: dict, comps: list, ltr_weekly: int) -> di
         "growth_rate": growth_rate,
         "monthly_mid": monthly_mid,
         "monthly_high": monthly_high,
+        "avg_monthly_mid": avg_monthly_mid,
+        "avg_monthly_high": avg_monthly_high,
+        "chart_annual_mid": chart_annual_mid,
+        "chart_annual_high": chart_annual_high,
         "ltr_weekly": ltr_weekly,
         "ltr_annual": ltr_annual,
         "ltr_annual_net": ltr_annual_net,
         "ltr_monthly": ltr_monthly,
         "str_premium": str_premium,
         "str_premium_pct": str_premium_pct,
-        "pool_adjustment": pool_adjustment,
+        "quality_adjustment": quality_adjustment,
+        "quality_factors": quality_factors,
         "pool_count": pool_count,
-        "prospect_has_pool": prospect_has_pool,
         "advantages": advantages[:4],
         "disadvantages": disadvantages[:3],
         "sales_points": sales_points[:4],
@@ -481,7 +528,17 @@ def main():
         with col_c:
             bathrooms = st.number_input("Bathrooms", min_value=1, max_value=10, value=2)
         
-        features = st.text_area("Known Features (optional)", placeholder="Pool, renovation, etc.", height=80)
+        st.markdown("#### Property Quality")
+        col_q1, col_q2, col_q3 = st.columns(3)
+        with col_q1:
+            has_pool = st.checkbox("Pool", value=False)
+            is_modern = st.checkbox("Modern interior / renovated", value=False)
+        with col_q2:
+            is_cbd = st.checkbox("CBD / central location", value=False)
+            pets_allowed = st.checkbox("Pets allowed", value=False)
+        with col_q3:
+            has_outdoor = st.checkbox("Outdoor entertaining", value=False)
+            is_dated = st.checkbox("Dated / needs work", value=False)
         
         col_d, col_e = st.columns(2)
         with col_d:
@@ -554,7 +611,13 @@ def main():
         property_details = {
             "address": address, "region": region, 
             "bedrooms": bedrooms, "bathrooms": bathrooms,
-            "features": features, "value": value
+            "value": value,
+            "has_pool": has_pool,
+            "is_modern": is_modern,
+            "is_cbd": is_cbd,
+            "pets_allowed": pets_allowed,
+            "has_outdoor": has_outdoor,
+            "is_dated": is_dated
         }
         analysis = analyze_property(property_details, comps, ltr_weekly)
         
@@ -696,6 +759,18 @@ def main():
         
         st.plotly_chart(fig, use_container_width=True)
         
+        # Average monthly summary (for comparison to existing owner payouts)
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Avg Monthly (Mid-range)", f"${analysis['avg_monthly_mid']:,.0f}", 
+                     help="Average monthly payout across the year")
+        with col2:
+            st.metric("Avg Monthly (Optimistic)", f"${analysis['avg_monthly_high']:,.0f}",
+                     help="Average monthly payout if matching top performers")
+        with col3:
+            st.metric("LTR Monthly (net)", f"${analysis['ltr_monthly']:,.0f}",
+                     help="Long-term rental monthly after 6% agent fee")
+        
         # Growth note
         if analysis['growth_rate'] != 0:
             growth_pct = analysis['growth_rate'] * 100
@@ -732,8 +807,16 @@ def main():
             st.metric("STR Premium", f"+${analysis['str_premium']:,.0f}", 
                      f"{analysis['str_premium_pct']:.0f}% above LTR")
         
-        if analysis['pool_adjustment'] < 1:
-            st.warning(f"⚠️ Estimates reduced 15% — {analysis['pool_count']}/5 comps have pools, prospect does not")
+        # Show quality adjustments if any
+        if analysis['quality_factors']:
+            adjustment_pct = (analysis['quality_adjustment'] - 1) * 100
+            if adjustment_pct > 0:
+                st.success(f"📈 Quality adjustment: +{adjustment_pct:.0f}% applied")
+            elif adjustment_pct < 0:
+                st.warning(f"📉 Quality adjustment: {adjustment_pct:.0f}% applied")
+            with st.expander("View quality factors"):
+                for factor, pct in analysis['quality_factors']:
+                    st.caption(f"• {factor}: {pct}")
         
         # ADVANTAGES
         st.markdown("### ✅ Advantages")
