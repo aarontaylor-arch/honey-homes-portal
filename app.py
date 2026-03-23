@@ -1,8 +1,12 @@
 """
-Appraisal Tool v3.7
-- Seasonality chart with monthly projections
+Appraisal Tool v3.8
+- Quality checkboxes with calibrated adjustments
+- Seasonality chart with smooth curves
 - YoY growth adjustments
-- Stronger sales talking points
+- Average monthly display
+- LTR net of 6% agent fee
+- Fit assessment
+- Pool table exclusion fix
 """
 
 import streamlit as st
@@ -127,15 +131,8 @@ st.markdown("""
         font-size: 1.05rem;
     }
     
-    .growth-positive {
-        color: #059669;
-        font-weight: 600;
-    }
-    
-    .growth-negative {
-        color: #DC2626;
-        font-weight: 600;
-    }
+    .growth-positive { color: #059669; font-weight: 600; }
+    .growth-negative { color: #DC2626; font-weight: 600; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -219,7 +216,8 @@ def get_regional_comps(region: str, bedrooms: int) -> list:
         results = cursor.fetchall()
         for r in results:
             for key in ['avg_monthly_payout', 'avg_monthly_gross', 'avg_nights', 'Latitude', 'Longitude']:
-                if r.get(key): r[key] = to_float(r[key])
+                if r.get(key): 
+                    r[key] = to_float(r[key])
         return results
     except Exception as e:
         st.error(f"Query failed: {e}")
@@ -250,22 +248,6 @@ def get_region_averages(region: str) -> dict:
         conn.close()
 
 # =============================================================================
-# SEASONALITY & PROJECTIONS
-# =============================================================================
-
-def get_monthly_projections(annual_amount: float, region: str, apply_growth: bool = True) -> list:
-    """Calculate monthly projections based on seasonality and optional YoY growth."""
-    seasonality = SEASONALITY.get(region, [1/12] * 12)
-    growth = YOY_GROWTH.get(region, 0) if apply_growth else 0
-    
-    # Apply growth (capped at reasonable levels)
-    growth = max(-0.15, min(0.30, growth))  # Cap between -15% and +30%
-    adjusted_annual = annual_amount * (1 + growth)
-    
-    monthly = [adjusted_annual * s for s in seasonality]
-    return monthly, adjusted_annual, growth
-
-# =============================================================================
 # ANALYSIS FUNCTIONS
 # =============================================================================
 
@@ -276,36 +258,35 @@ def analyze_property(property_details: dict, comps: list, ltr_weekly: int) -> di
     bedrooms = property_details['bedrooms']
     bathrooms = property_details['bathrooms']
     
+    # LTR calculations (net of 6% agent fee)
     ltr_annual = ltr_weekly * 52
-    ltr_agent_fee = 0.06  # 6% agent fee
+    ltr_agent_fee = 0.06
     ltr_annual_net = ltr_annual * (1 - ltr_agent_fee)
     ltr_monthly = ltr_annual_net / 12
     
+    # Comp analysis
     payout_values = [c['avg_monthly_payout'] * 12 for c in comps[:5]]
     min_pay = min(payout_values) if payout_values else 0
     max_pay = max(payout_values) if payout_values else 0
     avg_pay = sum(payout_values) / len(payout_values) if payout_values else 0
     
-    # Pool analysis (for comps)
+    # Pool analysis (for comps) - exclude "pool table"
     pool_comps = [c for c in comps[:5] if c.get('Amenities') and 'pool' in c['Amenities'].lower() and 'pool table' not in c['Amenities'].lower()]
     pool_count = len(pool_comps)
     
-    # Quality adjustments from checkboxes
+    # Quality adjustments from checkboxes (calibrated)
     quality_adjustment = 1.0
     quality_factors = []
     
-    # Positive factors
     if property_details.get('has_pool'):
         quality_adjustment += 0.15
         quality_factors.append(("Pool", "+15%"))
     elif pool_count >= 2:
-        # No pool but comps have pools - penalty
         quality_adjustment -= 0.15
         quality_factors.append(("No pool (comps have pools)", "-15%"))
     
-    if property_details.get('is_modern'):
-        # No adjustment - modern is expected baseline
-        pass
+    # Modern interior - no adjustment (baseline expectation)
+    # Outdoor entertaining - no adjustment (baseline expectation)
     
     if property_details.get('is_cbd'):
         quality_adjustment += 0.02
@@ -315,23 +296,18 @@ def analyze_property(property_details: dict, comps: list, ltr_weekly: int) -> di
         quality_adjustment += 0.10
         quality_factors.append(("Pets allowed", "+10%"))
     
-    if property_details.get('has_outdoor'):
-        # No adjustment - outdoor is expected baseline
-        pass
-    
-    # Negative factors
     if property_details.get('is_dated'):
         quality_adjustment -= 0.10
         quality_factors.append(("Dated / needs work", "-10%"))
     
-    # Base projections (before growth)
+    # Base projections
     conservative_base = min_pay * 0.9 * quality_adjustment
     midrange_base = avg_pay * quality_adjustment
     optimistic_base = max_pay * quality_adjustment
     
     # Apply YoY growth
     growth_rate = YOY_GROWTH.get(region, 0)
-    growth_rate = max(-0.15, min(0.30, growth_rate))  # Cap it
+    growth_rate = max(-0.15, min(0.30, growth_rate))  # Cap between -15% and +30%
     
     conservative = conservative_base * (1 + growth_rate)
     midrange = midrange_base * (1 + growth_rate)
@@ -348,7 +324,7 @@ def analyze_property(property_details: dict, comps: list, ltr_weekly: int) -> di
     avg_monthly_mid = chart_annual_mid / 12
     avg_monthly_high = chart_annual_high / 12
     
-    # STR premium (compared to net LTR after agent fees)
+    # STR premium (compared to net LTR)
     str_premium = midrange - ltr_annual_net
     str_premium_pct = (str_premium / ltr_annual_net * 100) if ltr_annual_net > 0 else 0
     
@@ -385,14 +361,15 @@ def analyze_property(property_details: dict, comps: list, ltr_weekly: int) -> di
         advantages.append("Modern interior commands premium rates and better reviews")
     
     if property_details.get('pets_allowed'):
-        advantages.append("Pet-friendly opens up a underserved market segment")
+        advantages.append("Pet-friendly opens up an underserved market segment")
     
     # Build disadvantages
     disadvantages = []
     
     if pool_count >= 2 and not property_details.get('has_pool'):
-        top_pool = pool_comps[0]
-        disadvantages.append(f"No pool — {top_pool['Nickname']} with pool earns ${top_pool['avg_monthly_payout']*12:,.0f}/year")
+        if pool_comps:
+            top_pool = pool_comps[0]
+            disadvantages.append(f"No pool — {top_pool['Nickname']} with pool earns ${top_pool['avg_monthly_payout']*12:,.0f}/year")
     
     if growth_rate < -0.05:
         disadvantages.append(f"{region} market down {abs(growth_rate)*100:.0f}% year-on-year — factored into projections")
@@ -412,58 +389,48 @@ def analyze_property(property_details: dict, comps: list, ltr_weekly: int) -> di
     if not disadvantages:
         disadvantages.append("New listing needs 3-6 months to build reviews and optimise pricing")
     
-    # Build STRONG sales points
+    # Build sales points
     sales_points = []
     
-    # The money shot
     if str_premium > 10000:
         sales_points.append(f"You're leaving ${str_premium:,.0f} on the table every year with long-term rental")
     else:
         sales_points.append(f"STR earns you ${str_premium:,.0f} more per year — that's {str_premium_pct:.0f}% extra in your pocket")
     
-    # Peak season hook
-    seasonality = SEASONALITY.get(region, [1/12] * 12)
     peak_month_idx = seasonality.index(max(seasonality))
     peak_month = MONTHS[peak_month_idx]
     peak_monthly = monthly_high[peak_month_idx]
     sales_points.append(f"In {peak_month} alone, top performers earn ${peak_monthly:,.0f} — that's more than 2 months of rent")
     
-    # Growth story (if positive)
     if growth_rate > 0.05:
         next_year = midrange * (1 + growth_rate)
         sales_points.append(f"{region} STR is booming — at current growth, you'd earn ${next_year:,.0f} by year two")
     
-    # Conservative floor
     if conservative > ltr_annual_net:
         floor_premium = conservative - ltr_annual_net
         sales_points.append(f"Even our conservative estimate beats rent by ${floor_premium:,.0f} — there's no downside")
     
-    # Bathroom advantage
     if bathrooms >= bedrooms:
         sales_points.append(f"Your {bathrooms} bathrooms are a competitive advantage — guests pay premium for no queues")
     
-    # BUILD FIT ASSESSMENT
+    # Fit assessment
     fit_warnings = []
-    fit_score = "good"  # good, marginal, poor
+    fit_score = "good"
     
-    # Check if conservative beats LTR
     if conservative < ltr_annual_net:
         fit_warnings.append(f"Conservative estimate (${conservative:,.0f}) is below LTR net (${ltr_annual_net:,.0f}) — risk of underperforming")
         fit_score = "poor"
     
-    # Check STR premium
     if str_premium_pct < 15:
         fit_warnings.append(f"STR premium only {str_premium_pct:.0f}% above LTR — may not justify extra management effort")
         if fit_score != "poor":
             fit_score = "marginal"
     
-    # Check declining market
     if growth_rate < -0.05:
         fit_warnings.append(f"{region} market declining {abs(growth_rate)*100:.0f}% year-on-year — consider timing carefully")
         if fit_score != "poor":
             fit_score = "marginal"
     
-    # Check low occupancy
     if avg_nights < 15:
         fit_warnings.append(f"Comparable properties averaging only {avg_nights:.0f} nights/month — weaker demand in this area")
         if fit_score != "poor":
@@ -473,9 +440,6 @@ def analyze_property(property_details: dict, comps: list, ltr_weekly: int) -> di
         "conservative": conservative,
         "midrange": midrange,
         "optimistic": optimistic,
-        "conservative_base": conservative_base,
-        "midrange_base": midrange_base,
-        "optimistic_base": optimistic_base,
         "growth_rate": growth_rate,
         "monthly_mid": monthly_mid,
         "monthly_high": monthly_high,
@@ -633,7 +597,7 @@ def main():
             st.warning("⚠️ **MARGINAL FIT** — Review the considerations below before proceeding")
             for warning in analysis['fit_warnings']:
                 st.caption(f"• {warning}")
-        else:  # poor
+        else:
             st.error("⛔ **PROCEED WITH CAUTION** — This property may not be a strong STR candidate")
             for warning in analysis['fit_warnings']:
                 st.caption(f"• {warning}")
@@ -704,36 +668,28 @@ def main():
                 st.metric("Annual", f"${annual:,.0f}")
             st.divider()
         
-        # SEASONALITY CHART with smooth curves
+        # SEASONALITY CHART
         st.markdown("### 📈 Monthly Revenue Forecast (Year 1)")
         
         import plotly.graph_objects as go
         
         fig = go.Figure()
         
-        # STR Optimistic (green)
         fig.add_trace(go.Scatter(
             x=MONTHS, y=analysis['monthly_high'],
-            mode='lines',
-            name='STR - Optimistic',
-            line=dict(color='#10B981', width=3, shape='spline', smoothing=1.3),
-            fill=None
+            mode='lines', name='STR - Optimistic',
+            line=dict(color='#10B981', width=3, shape='spline', smoothing=1.3)
         ))
         
-        # STR Mid-range (blue)
         fig.add_trace(go.Scatter(
             x=MONTHS, y=analysis['monthly_mid'],
-            mode='lines',
-            name='STR - Mid-range',
-            line=dict(color='#3B82F6', width=3, shape='spline', smoothing=1.3),
-            fill=None
+            mode='lines', name='STR - Mid-range',
+            line=dict(color='#3B82F6', width=3, shape='spline', smoothing=1.3)
         ))
         
-        # LTR (red dashed)
         fig.add_trace(go.Scatter(
             x=MONTHS, y=[analysis['ltr_monthly']] * 12,
-            mode='lines',
-            name='Long-term Rental',
+            mode='lines', name='Long-term Rental',
             line=dict(color='#EF4444', width=2, dash='dash')
         ))
         
@@ -741,13 +697,7 @@ def main():
             xaxis_title=None,
             yaxis_title="Monthly Revenue ($)",
             yaxis_tickformat="$,.0f",
-            legend=dict(
-                orientation="h",
-                yanchor="bottom",
-                y=-0.2,
-                xanchor="center",
-                x=0.5
-            ),
+            legend=dict(orientation="h", yanchor="bottom", y=-0.2, xanchor="center", x=0.5),
             margin=dict(l=0, r=0, t=20, b=60),
             height=400,
             plot_bgcolor='rgba(0,0,0,0)',
@@ -759,17 +709,14 @@ def main():
         
         st.plotly_chart(fig, use_container_width=True)
         
-        # Average monthly summary (for comparison to existing owner payouts)
+        # Average monthly summary
         col1, col2, col3 = st.columns(3)
         with col1:
-            st.metric("Avg Monthly (Mid-range)", f"${analysis['avg_monthly_mid']:,.0f}", 
-                     help="Average monthly payout across the year")
+            st.metric("Avg Monthly (Mid-range)", f"${analysis['avg_monthly_mid']:,.0f}")
         with col2:
-            st.metric("Avg Monthly (Optimistic)", f"${analysis['avg_monthly_high']:,.0f}",
-                     help="Average monthly payout if matching top performers")
+            st.metric("Avg Monthly (Optimistic)", f"${analysis['avg_monthly_high']:,.0f}")
         with col3:
-            st.metric("LTR Monthly (net)", f"${analysis['ltr_monthly']:,.0f}",
-                     help="Long-term rental monthly after 6% agent fee")
+            st.metric("LTR Monthly (net)", f"${analysis['ltr_monthly']:,.0f}")
         
         # Growth note
         if analysis['growth_rate'] != 0:
@@ -786,14 +733,11 @@ def main():
         
         col1, col2, col3 = st.columns(3)
         with col1:
-            st.metric("Conservative", f"${analysis['conservative']:,.0f}", 
-                     help="Based on lowest comp, adjusted for market conditions")
+            st.metric("Conservative", f"${analysis['conservative']:,.0f}")
         with col2:
-            st.metric("Mid-range", f"${analysis['midrange']:,.0f}", 
-                     help="Based on average of comparable properties")
+            st.metric("Mid-range", f"${analysis['midrange']:,.0f}")
         with col3:
-            st.metric("Optimistic", f"${analysis['optimistic']:,.0f}", 
-                     help="Achievable if matching top performer")
+            st.metric("Optimistic", f"${analysis['optimistic']:,.0f}")
         
         # LTR COMPARISON
         st.markdown("#### Long-Term Rental Comparison")
@@ -807,7 +751,7 @@ def main():
             st.metric("STR Premium", f"+${analysis['str_premium']:,.0f}", 
                      f"{analysis['str_premium_pct']:.0f}% above LTR")
         
-        # Show quality adjustments if any
+        # Quality adjustments
         if analysis['quality_factors']:
             adjustment_pct = (analysis['quality_adjustment'] - 1) * 100
             if adjustment_pct > 0:
@@ -833,7 +777,7 @@ def main():
         for point in analysis['sales_points']:
             st.markdown(f"""<div class="sales-point">"{point}"</div>""", unsafe_allow_html=True)
         
-        # SUMMARY BOX
+        # SUMMARY
         st.markdown("### 📋 Summary")
         st.markdown(f"""
         <div class="summary-box">
